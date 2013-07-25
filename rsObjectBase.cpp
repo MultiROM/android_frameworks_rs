@@ -28,9 +28,10 @@ ObjectBase::ObjectBase(Context *rsc) {
     mRSC = rsc;
     mNext = NULL;
     mPrev = NULL;
+    mDH = NULL;
 
 #if RS_OBJECT_DEBUG
-    mStack.update(2);
+    mDH = new DebugHelper();
 #endif
 
     rsAssert(rsc);
@@ -41,7 +42,9 @@ ObjectBase::ObjectBase(Context *rsc) {
 ObjectBase::~ObjectBase() {
     //ALOGV("~ObjectBase %p  ref %i,%i", this, mUserRefCount, mSysRefCount);
 #if RS_OBJECT_DEBUG
-    mStack.dump();
+    mDH->dump();
+    delete mDH;
+    mDH = NULL;
 #endif
 
     if (mPrev || mNext) {
@@ -69,12 +72,12 @@ void ObjectBase::dumpLOGV(const char *op) const {
 }
 
 void ObjectBase::incUserRef() const {
-    android_atomic_inc(&mUserRefCount);
+    __sync_fetch_and_add(&mUserRefCount, 1);
     //ALOGV("ObjectBase %p incU ref %i, %i", this, mUserRefCount, mSysRefCount);
 }
 
 void ObjectBase::incSysRef() const {
-    android_atomic_inc(&mSysRefCount);
+    __sync_fetch_and_add(&mSysRefCount, 1);
     //ALOGV("ObjectBase %p incS ref %i, %i", this, mUserRefCount, mSysRefCount);
 }
 
@@ -111,24 +114,26 @@ bool ObjectBase::checkDelete(const ObjectBase *ref) {
 bool ObjectBase::decUserRef() const {
     rsAssert(mUserRefCount > 0);
 #if RS_OBJECT_DEBUG
-    ALOGV("ObjectBase %p decU ref %i, %i", this, mUserRefCount, mSysRefCount);
+    //ALOGV("ObjectBase %p decU ref %i, %i", this, mUserRefCount, mSysRefCount);
     if (mUserRefCount <= 0) {
-        mStack.dump();
+        mDH->dump();
     }
 #endif
 
 
-    if ((android_atomic_dec(&mUserRefCount) <= 1) &&
-        (android_atomic_acquire_load(&mSysRefCount) <= 0)) {
-        return checkDelete(this);
+    if ((__sync_fetch_and_sub(&mUserRefCount, 1) <= 1)) {
+        __sync_synchronize();
+        if (mSysRefCount <= 0) {
+            return checkDelete(this);
+        }
     }
     return false;
 }
 
 bool ObjectBase::zeroUserRef() const {
     //ALOGV("ObjectBase %p zeroU ref %i, %i", this, mUserRefCount, mSysRefCount);
-    android_atomic_acquire_store(0, &mUserRefCount);
-    if (android_atomic_acquire_load(&mSysRefCount) <= 0) {
+    __sync_and_and_fetch(&mUserRefCount, 0);
+    if (mSysRefCount <= 0) {
         return checkDelete(this);
     }
     return false;
@@ -137,9 +142,11 @@ bool ObjectBase::zeroUserRef() const {
 bool ObjectBase::decSysRef() const {
     //ALOGV("ObjectBase %p decS ref %i, %i", this, mUserRefCount, mSysRefCount);
     rsAssert(mSysRefCount > 0);
-    if ((android_atomic_dec(&mSysRefCount) <= 1) &&
-        (android_atomic_acquire_load(&mUserRefCount) <= 0)) {
-        return checkDelete(this);
+    if ((__sync_fetch_and_sub(&mSysRefCount, 1) <= 1)) {
+        __sync_synchronize();
+        if (mUserRefCount <= 0) {
+            return checkDelete(this);
+        }
     }
     return false;
 }
